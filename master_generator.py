@@ -2,17 +2,49 @@ import os
 import time
 import json
 import requests
-import google.generativeai as genai
 from datetime import datetime
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 
 # --- 1. SETUP KEYS ---
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HF_TOKEN = os.environ.get("HF_TOKEN")
+
+if not GEMINI_API_KEY or not HF_TOKEN:
+    print("❌ Error: API Keys missing in GitHub Secrets!")
+    exit(1)
 
 today_date = datetime.now().strftime("%d-%b-%Y")
 
-# --- 2. HUGGING FACE T2V ---
+# --- 2. NEW GEMINI 3.6 REST API (From your HTML Code) ---
+def ask_gemini(prompt):
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
+    }
+    payload = {
+        "model": "gemini-3.6-flash",
+        "input": [{"type": "user_input", "content": [{"type": "text", "text": prompt}]}],
+        "store": False
+    }
+    
+    try:
+        res = requests.post(url, json=payload, headers=headers)
+        res.raise_for_status()
+        data = res.json()
+        
+        text_output = ""
+        for step in data.get("steps", []):
+            if step.get("type") == "model_output":
+                for item in step.get("content", []):
+                    if item.get("type") == "text":
+                        text_output += item.get("text", "")
+        return text_output.strip()
+    except Exception as e:
+        print(f"❌ Gemini API Error: {e}")
+        return None
+
+# --- 3. HUGGING FACE T2V (Crash-Proof) ---
 def generate_t2v(prompt, filename):
     print(f"🎥 Generating Video for: {prompt}")
     part1 = "https://"
@@ -21,30 +53,38 @@ def generate_t2v(prompt, filename):
     headers = {"Authorization": "Bearer " + HF_TOKEN}
     
     for attempt in range(4):
-        res = requests.post(API_URL, headers=headers, json={"inputs": prompt})
-        if res.status_code == 200:
-            with open(filename, "wb") as f: 
-                f.write(res.content)
-            return True
-        print(f"⏳ Waiting for Free API... Attempt {attempt+1}/4")
+        try:
+            res = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=60)
+            if res.status_code == 200:
+                with open(filename, "wb") as f: 
+                    f.write(res.content)
+                return True
+            else:
+                print(f"⚠️ HF Server Busy (Status {res.status_code}).")
+        except Exception as e:
+            print(f"⚠️ Network/Connection Error: {e}")
+            
+        print(f"⏳ Retrying... Attempt {attempt+1}/4")
         time.sleep(15)
     return False
 
-# --- 3. STATE MANAGEMENT (PAUSE & RESUME LOGIC) ---
+# --- 4. STATE MANAGEMENT (PAUSE & RESUME LOGIC) ---
 STATE_FILE = "video_state.json"
 HISTORY_FILE = "history.json"
-
 state = {}
-# 🔥 USER DEMAND FIXED: USING NEW MODEL gemini-3.6-flash 🔥
-model = genai.GenerativeModel('gemini-3.6-flash') 
 
 if os.path.exists(STATE_FILE):
     print("🔄 Found incomplete video! Resuming from where we left yesterday...")
-    with open(STATE_FILE, "r") as f:
-        state = json.loads(f.read())
-else:
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.loads(f.read())
+    except:
+        pass
+
+if not state:
     print("🎬 Starting NEW 35s Funny Snake USA Video Process...")
     vid_num = int(time.time())
+    
     script_prompt = """Write a 35-second YouTube Shorts script for a USA audience reacting to a funny/crazy snake encounter (like India trends but American style). 
     Length: Exactly 75 words.
     Output STRICTLY as a JSON array of 3 objects.
@@ -53,20 +93,27 @@ else:
     2. "visual": A 3-word English prompt for AI video generator.
     Return ONLY raw JSON array."""
 
+    script_text = ask_gemini(script_prompt)
+    if not script_text:
+        print("❌ Failed to get script. Exiting.")
+        exit(1)
+        
+    if script_text.startswith("```json"): script_text = script_text[7:-3]
+    elif script_text.startswith("```"): script_text = script_text[3:-3]
+    
     try:
-        script_text = model.generate_content(script_prompt).text
-        if script_text.startswith("```json"): script_text = script_text[7:-3]
-        elif script_text.startswith("```"): script_text = script_text[3:-3]
         scenes = json.loads(script_text.strip())
     except Exception as e:
-        print(f"❌ Gemini Script Error: {e}")
+        print(f"❌ JSON Parsing Error: {e}\nText: {script_text}")
         exit(1)
 
     meta_prompt = "Generate for a funny snake reaction short: 1. Catchy Title (under 60 chars) 2. Two-line Description 3. 5 comma-separated tags. Format exactly as: TITLE|DESC|TAGS"
+    meta_text = ask_gemini(meta_prompt)
+    
     try:
-        meta = model.generate_content(meta_prompt).text.split('|')
+        meta = meta_text.split('|')
         title = meta[0].strip() if len(meta) > 0 else "Crazy Snake Encounter! 🐍"
-        desc = meta[1].strip() if len(meta) > 1 else "You won't believe what happened! #shorts #snake"
+        desc = meta[1].strip() if len(meta) > 1 else "You won't believe what happened! #shorts"
         tags = meta[2].strip() if len(meta) > 2 else "snake, funny, reaction, shorts, crazy"
     except:
         title, desc, tags = "Crazy Snake!", "Watch this!", "snake, funny"
@@ -77,10 +124,9 @@ else:
         "meta": {"title": title, "desc": desc, "tags": tags},
         "completed_clips": []
     }
-    with open(STATE_FILE, "w") as f:
-        f.write(json.dumps(state))
+    with open(STATE_FILE, "w") as f: f.write(json.dumps(state))
 
-# --- 4. ASSET GENERATION LOOP ---
+# --- 5. ASSET GENERATION LOOP (Resume Enabled) ---
 scenes = state["scenes"]
 vid_num = state["vid_num"]
 completed = state["completed_clips"]
@@ -101,31 +147,31 @@ for i in range(start_index, len(scenes)):
         
         # Save progress securely after every successful scene
         state["completed_clips"] = completed
-        with open(STATE_FILE, "w") as f:
-            f.write(json.dumps(state))
+        with open(STATE_FILE, "w") as f: f.write(json.dumps(state))
     else:
-        print(f"⚠️ Hugging Face API Error at scene {i+1}. Saving partial progress for tomorrow.")
-        break # Loop band, jitna bana hai utna hi save karega
+        print(f"⚠️ Hugging Face API Error/Limit hit. Saving partial progress for tomorrow.")
+        break # Loop band, jitna bana hai utna hi jod kar dega!
 
-# --- 5. MERGE WHAT WE HAVE ---
+# --- 6. MERGE WHAT WE HAVE ---
 final_video = "Funny_Snake_" + str(vid_num) + ".mp4"
 is_complete = len(completed) == len(scenes)
 
 if len(completed) > 0:
+    print(f"🔗 Merging {len(completed)} clips...")
     clip_objs = [VideoFileClip(c) for c in completed]
     concatenate_videoclips(clip_objs).write_videofile(final_video, fps=24, codec="libx264", logger=None)
 else:
-    print("❌ No clips could be generated today. Waiting for tomorrow.")
-    exit(1)
+    print("❌ No clips could be generated today. Wait for next day.")
+    exit(0)
 
-# --- 6. UPDATE DASHBOARD HISTORY ---
+# --- 7. UPDATE DASHBOARD HISTORY ---
 history = []
 if os.path.exists(HISTORY_FILE):
     try:
         with open(HISTORY_FILE, "r") as f: history = json.loads(f.read())
     except: pass
 
-# Naye video se purana aadha video replace kar denge
+# Replace old partial video entry with updated one
 history = [h for h in history if h.get("id") != str(vid_num)]
 
 status_text = "Complete" if is_complete else f"Partial"
@@ -141,17 +187,15 @@ history.insert(0, {
     "progress": f"{len(completed)}/{len(scenes)} Scenes"
 })
 
-with open(HISTORY_FILE, "w") as f: 
-    f.write(json.dumps(history))
+with open(HISTORY_FILE, "w") as f: f.write(json.dumps(history))
 
-# Agar pura ban gaya, to 'state' file uda do taaki kal naya video bane
 if is_complete:
     if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
     print("✅ VIDEO 100% COMPLETE!")
 else:
-    print("⏸️ VIDEO PARTIAL. Will resume tomorrow.")
+    print(f"⏸️ VIDEO PARTIAL ({len(completed)}/{len(scenes)}). Will resume next day.")
 
-# --- 7. BUILD HTML UI ---
+# --- 8. BUILD HTML UI ---
 html_content = """
 <!DOCTYPE html>
 <html lang="en">
@@ -188,7 +232,7 @@ html_content = """
 </head>
 <body>
     <h1>🐍 USA Viral Snake Studio</h1>
-    <p class="subtitle">Daily AI Shorts | Auto-Pause & Resume Supported</p>
+    <p class="subtitle">Auto-Pause & Resume Supported | Safe from Errors</p>
     <div class="grid">
 """
 
