@@ -1,4 +1,4 @@
-name: Live Demo & Full Video Engine
+name: Live Multi-Token Video Engine
 
 on:
   push:
@@ -23,24 +23,27 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pip install requests moviepy==1.0.3 edge-tts
 
-      - name: Check trigger type and run Python
+      - name: Run Python Engine
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
+          HF_TOKEN3: ${{ secrets.HF_TOKEN3 }}
+          HF_TOKEN4: ${{ secrets.HF_TOKEN4 }}
+          HF_TOKEN5: ${{ secrets.HF_TOKEN5 }}
+          HF_TOKEN6: ${{ secrets.HF_TOKEN6 }}
         run: |
           if [ "${{ github.event_name }}" == "schedule" ]; then
-            echo "Running FULL mode..."
             export RUN_MODE="FULL"
           else
-            echo "Running DEMO mode..."
             export RUN_MODE="DEMO"
           fi
           python master_generator.py
 
-      - name: Push to GitHub Pages
+      - name: Push Updates
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
           git add *.mp4 index.html history.json video_state.json || echo "No files"
-          git commit -m "Auto Update Video & HTML Dashboard" || echo "No changes"
+          git commit -m "Auto Update: Video & HTML Dashboard" || echo "No changes"
           git push
