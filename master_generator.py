@@ -11,13 +11,10 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 today_date = datetime.now().strftime("%d-%b-%Y")
-file_date = datetime.now().strftime("%Y%m%d_%H%M")
-vid_num = int(time.time())
 
 # --- 2. HUGGING FACE T2V ---
 def generate_t2v(prompt, filename):
     print(f"🎥 Generating Video for: {prompt}")
-    # URL split to avoid markdown bugs
     part1 = "https://"
     part2 = "api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b"
     API_URL = part1 + part2
@@ -29,79 +26,132 @@ def generate_t2v(prompt, filename):
             with open(filename, "wb") as f: 
                 f.write(res.content)
             return True
+        print(f"⏳ Waiting for Free API... Attempt {attempt+1}/4")
         time.sleep(15)
     return False
 
-# --- 3. MAIN WORKFLOW ---
-print("🎬 Starting 35s Funny Snake USA Video Process...")
-model = genai.GenerativeModel('gemini-1.5-flash')
+# --- 3. STATE MANAGEMENT (PAUSE & RESUME LOGIC) ---
+STATE_FILE = "video_state.json"
+HISTORY_FILE = "history.json"
 
-# A. Script Generation (Funny Snakes, USA Style, 35s = ~75 words)
-script_prompt = """Write a 35-second YouTube Shorts script for a USA audience reacting to a funny/crazy snake encounter (like India trends but American style). 
-Length: Exactly 75 words.
-Output STRICTLY as a JSON array of 3 objects.
-Each object:
-1. "narration": American English script line.
-2. "visual": A 3-word English prompt for AI video generator.
-Return ONLY raw JSON array."""
+state = {}
+# 🔥 USER DEMAND FIXED: USING NEW MODEL gemini-3.6-flash 🔥
+model = genai.GenerativeModel('gemini-3.6-flash') 
 
-try:
-    script_text = model.generate_content(script_prompt).text
-    if script_text.startswith("```json"): script_text = script_text[7:-3]
-    elif script_text.startswith("```"): script_text = script_text[3:-3]
-    scenes = json.loads(script_text.strip())
-except Exception as e:
-    print(f"❌ Gemini Script Error: {e}")
-    exit(1)
+if os.path.exists(STATE_FILE):
+    print("🔄 Found incomplete video! Resuming from where we left yesterday...")
+    with open(STATE_FILE, "r") as f:
+        state = json.loads(f.read())
+else:
+    print("🎬 Starting NEW 35s Funny Snake USA Video Process...")
+    vid_num = int(time.time())
+    script_prompt = """Write a 35-second YouTube Shorts script for a USA audience reacting to a funny/crazy snake encounter (like India trends but American style). 
+    Length: Exactly 75 words.
+    Output STRICTLY as a JSON array of 3 objects.
+    Each object:
+    1. "narration": American English script line.
+    2. "visual": A 3-word English prompt for AI video generator.
+    Return ONLY raw JSON array."""
 
-clip_files = []
+    try:
+        script_text = model.generate_content(script_prompt).text
+        if script_text.startswith("```json"): script_text = script_text[7:-3]
+        elif script_text.startswith("```"): script_text = script_text[3:-3]
+        scenes = json.loads(script_text.strip())
+    except Exception as e:
+        print(f"❌ Gemini Script Error: {e}")
+        exit(1)
 
-# B. Generate & Merge Assets
-for i, scene in enumerate(scenes):
+    meta_prompt = "Generate for a funny snake reaction short: 1. Catchy Title (under 60 chars) 2. Two-line Description 3. 5 comma-separated tags. Format exactly as: TITLE|DESC|TAGS"
+    try:
+        meta = model.generate_content(meta_prompt).text.split('|')
+        title = meta[0].strip() if len(meta) > 0 else "Crazy Snake Encounter! 🐍"
+        desc = meta[1].strip() if len(meta) > 1 else "You won't believe what happened! #shorts #snake"
+        tags = meta[2].strip() if len(meta) > 2 else "snake, funny, reaction, shorts, crazy"
+    except:
+        title, desc, tags = "Crazy Snake!", "Watch this!", "snake, funny"
+        
+    state = {
+        "vid_num": vid_num,
+        "scenes": scenes,
+        "meta": {"title": title, "desc": desc, "tags": tags},
+        "completed_clips": []
+    }
+    with open(STATE_FILE, "w") as f:
+        f.write(json.dumps(state))
+
+# --- 4. ASSET GENERATION LOOP ---
+scenes = state["scenes"]
+vid_num = state["vid_num"]
+completed = state["completed_clips"]
+
+start_index = len(completed)
+
+for i in range(start_index, len(scenes)):
+    scene = scenes[i]
     raw_vid = "raw_" + str(vid_num) + "_" + str(i) + ".mp4"
     aud_file = "aud_" + str(vid_num) + "_" + str(i) + ".mp3"
     clip_file = "clip_" + str(vid_num) + "_" + str(i) + ".mp4"
     
-    # Generate Voice
     os.system('edge-tts --voice "en-US-ChristopherNeural" --text "' + scene["narration"] + '" --write-media ' + aud_file)
     
-    # Generate Video & Loop it
     if generate_t2v(scene["visual"], raw_vid):
         os.system('ffmpeg -y -stream_loop -1 -i "' + raw_vid + '" -i "' + aud_file + '" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "' + clip_file + '" -loglevel error')
-        clip_files.append(VideoFileClip(clip_file))
+        completed.append(clip_file)
+        
+        # Save progress securely after every successful scene
+        state["completed_clips"] = completed
+        with open(STATE_FILE, "w") as f:
+            f.write(json.dumps(state))
+    else:
+        print(f"⚠️ Hugging Face API Error at scene {i+1}. Saving partial progress for tomorrow.")
+        break # Loop band, jitna bana hai utna hi save karega
 
-final_video = "Funny_Snake_" + file_date + ".mp4"
-if clip_files:
-    concatenate_videoclips(clip_files).write_videofile(final_video, fps=24, codec="libx264", logger=None)
+# --- 5. MERGE WHAT WE HAVE ---
+final_video = "Funny_Snake_" + str(vid_num) + ".mp4"
+is_complete = len(completed) == len(scenes)
+
+if len(completed) > 0:
+    clip_objs = [VideoFileClip(c) for c in completed]
+    concatenate_videoclips(clip_objs).write_videofile(final_video, fps=24, codec="libx264", logger=None)
 else:
-    print("❌ No clips generated. Exiting.")
+    print("❌ No clips could be generated today. Waiting for tomorrow.")
     exit(1)
 
-# C. Generate Metadata (Title, Desc, Tags)
-meta_prompt = "Generate for a funny snake reaction short: 1. Catchy Title (under 60 chars) 2. Two-line Description 3. 5 comma-separated tags. Format exactly as: TITLE|DESC|TAGS"
-meta = model.generate_content(meta_prompt).text.split('|')
-title = meta[0].strip() if len(meta) > 0 else "Crazy Snake Encounter! 🐍"
-desc = meta[1].strip() if len(meta) > 1 else "You won't believe what happened! #shorts #snake"
-tags = meta[2].strip() if len(meta) > 2 else "snake, funny, reaction, shorts, crazy"
-
-# --- 4. DASHBOARD GENERATION (index.html) ---
-history_file = "history.json"
+# --- 6. UPDATE DASHBOARD HISTORY ---
 history = []
-if os.path.exists(history_file):
+if os.path.exists(HISTORY_FILE):
     try:
-        with open(history_file, "r") as f: history = json.loads(f.read())
-    except:
-        pass
+        with open(HISTORY_FILE, "r") as f: history = json.loads(f.read())
+    except: pass
 
-# Add new video to top of history
+# Naye video se purana aadha video replace kar denge
+history = [h for h in history if h.get("id") != str(vid_num)]
+
+status_text = "Complete" if is_complete else f"Partial"
+
 history.insert(0, {
-    "file": final_video, "title": title, "desc": desc, "tags": tags, "date": today_date, "id": str(vid_num)
+    "file": final_video, 
+    "title": state["meta"]["title"], 
+    "desc": state["meta"]["desc"], 
+    "tags": state["meta"]["tags"], 
+    "date": today_date, 
+    "id": str(vid_num),
+    "status": status_text,
+    "progress": f"{len(completed)}/{len(scenes)} Scenes"
 })
 
-with open(history_file, "w") as f: 
+with open(HISTORY_FILE, "w") as f: 
     f.write(json.dumps(history))
 
-# Build Clean HTML UI
+# Agar pura ban gaya, to 'state' file uda do taaki kal naya video bane
+if is_complete:
+    if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
+    print("✅ VIDEO 100% COMPLETE!")
+else:
+    print("⏸️ VIDEO PARTIAL. Will resume tomorrow.")
+
+# --- 7. BUILD HTML UI ---
 html_content = """
 <!DOCTYPE html>
 <html lang="en">
@@ -114,14 +164,19 @@ html_content = """
         p.subtitle { color: #aaa; margin-bottom: 30px; }
         .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 25px; }
         .card { background: #1e1e1e; padding: 20px; border-radius: 15px; width: 320px; box-shadow: 0 8px 20px rgba(0,0,0,0.5); border: 1px solid #333; text-align: left; }
-        .date-badge { display: inline-block; background: #333; color: #00e676; padding: 5px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; margin-bottom: 15px; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .date-badge { background: #333; color: #00e676; padding: 5px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; }
+        
+        .status-complete { background: #133320; color: #00ff66; padding: 5px 10px; border-radius: 5px; font-size: 11px; font-weight: bold; border: 1px solid #00ff66; }
+        .status-partial { background: #332600; color: #ffcc00; padding: 5px 10px; border-radius: 5px; font-size: 11px; font-weight: bold; border: 1px solid #ffcc00; animation: blink 1.5s infinite; }
+        @keyframes blink { 50% { opacity: 0.6; } }
+
         video { width: 100%; border-radius: 10px; background: #000; margin-bottom: 15px; }
         .btn-download { display: block; background: #00e676; color: #000; text-align: center; text-decoration: none; padding: 12px; font-weight: bold; border-radius: 8px; margin-bottom: 10px; transition: 0.3s; }
         .btn-download:hover { background: #00c853; }
         .btn-toggle { background: #333; color: #fff; width: 100%; border: none; padding: 12px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: 0.3s; }
         .btn-toggle:hover { background: #444; }
         
-        /* Details Section */
         .details-box { display: none; margin-top: 15px; background: #171717; padding: 15px; border-radius: 10px; border: 1px solid #2a2a2a; }
         .detail-row { margin-bottom: 15px; }
         .detail-row label { display: block; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; font-weight: bold; }
@@ -133,18 +188,27 @@ html_content = """
 </head>
 <body>
     <h1>🐍 USA Viral Snake Studio</h1>
-    <p class="subtitle">Daily AI Shorts | Ready to Download & Upload</p>
+    <p class="subtitle">Daily AI Shorts | Auto-Pause & Resume Supported</p>
     <div class="grid">
 """
 
 for item in history:
     v_id = item['id']
+    is_done = item['status'] == 'Complete'
+    
+    stat_class = "status-complete" if is_done else "status-partial"
+    stat_text = "🟢 100% Complete" if is_done else f"⏳ {item['progress']} (Wait next day)"
+    
     html_content += f"""
         <div class="card">
-            <div class="date-badge">📅 {item['date']}</div>
+            <div class="header-row">
+                <div class="date-badge">📅 {item['date']}</div>
+                <div class="{stat_class}">{stat_text}</div>
+            </div>
+            
             <video src="{item['file']}" controls preload="metadata"></video>
             
-            <a href="{item['file']}" download class="btn-download">⬇️ Download Video</a>
+            <a href="{item['file']}" download class="btn-download">⬇️ Download {"Complete " if is_done else "Partial "}Video</a>
             <button class="btn-toggle" onclick="toggleDetails('{v_id}')">📝 Show Title & Tags</button>
             
             <div class="details-box" id="box-{v_id}">
