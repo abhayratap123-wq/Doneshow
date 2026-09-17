@@ -15,21 +15,55 @@ if not GEMINI_API_KEY or not HF_TOKEN:
 
 today_date = datetime.now().strftime("%d-%b-%Y")
 
-# --- 2. THE BULLETPROOF GEMINI API (NO PACKAGES NEEDED) ---
+# --- 2. THE EXACT GEMINI API FROM YOUR HTML CODE ---
 def ask_gemini(prompt):
     print("🧠 Contacting Gemini AI...")
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    headers = {"Content-Type": "application/json"}
+    
+    # Exact URL from your HTML
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+    
+    # Exact Headers from your HTML
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
+    }
+    
+    # Exact Payload structure from your HTML
+    payload = {
+        "model": "gemini-3.6-flash",
+        "input": [
+            {
+                "type": "user_input",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "store": False
+    }
     
     try:
         res = requests.post(url, json=payload, headers=headers)
         data = res.json()
-        if "candidates" in data:
-            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        
+        # Exact extraction logic from your HTML's `getModelText` function
+        text_output = ""
+        if data and "steps" in data and isinstance(data["steps"], list):
+            for step in data["steps"]:
+                if step.get("type") == "model_output" and isinstance(step.get("content"), list):
+                    for item in step["content"]:
+                        if item.get("type") == "text":
+                            text_output += item.get("text", "")
+        
+        if text_output:
+            return text_output.strip()
         else:
             print(f"❌ Gemini Error Response: {data}")
             return None
+            
     except Exception as e:
         print(f"❌ Gemini Connection Error: {e}")
         return None
