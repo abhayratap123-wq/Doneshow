@@ -23,30 +23,47 @@ print(f"🔑 Successfully loaded {len(hf_tokens)} Hugging Face Tokens!")
 today_date = datetime.now().strftime("%d-%b-%Y")
 RUN_MODE = os.environ.get("RUN_MODE", "FULL") 
 
-# --- 2. THE ULTIMATE GEMINI AI (AUTO-FALLBACK) ---
+# --- 2. THE ULTIMATE GEMINI AI (YOUR HTML METHOD) ---
 def ask_gemini(prompt):
     print("🧠 Contacting Gemini AI...")
-    models_to_try = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
-    headers = {"Content-Type": "application/json"}
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
+    }
+    payload = {
+        "model": "gemini-3.6-flash",
+        "input": [
+            {
+                "type": "user_input",
+                "content": [{"type": "text", "text": prompt}]
+            }
+        ],
+        "store": False
+    }
     
-    for model in models_to_try:
-        print(f"🔄 Trying model: {model}...")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        try:
-            res = requests.post(url, json=payload, headers=headers)
-            data = res.json()
-            if res.status_code == 200 and "candidates" in data:
-                print(f"✅ Success with {model}!")
-                return data['candidates'][0]['content']['parts'][0]['text'].strip()
-            else:
-                error_msg = data.get("error", {}).get("message", "Unknown Error")
-                print(f"⚠️ {model} failed. Reason: {error_msg}")
-        except Exception as e:
-            print(f"⚠️ Network error with {model}: {e}")
+    try:
+        res = requests.post(url, json=payload, headers=headers)
+        data = res.json()
+        
+        text_output = ""
+        if data and "steps" in data:
+            for step in data["steps"]:
+                if step.get("type") == "model_output":
+                    for item in step.get("content", []):
+                        if item.get("type") == "text": 
+                            text_output += item.get("text", "")
+                            
+        if text_output:
+            print("✅ Gemini API Success!")
+            return text_output.strip()
+        else:
+            print(f"❌ Gemini Error Response: {data}")
+            return None
             
-    print("❌ All Gemini Models Failed!")
-    return None
+    except Exception as e:
+        print(f"❌ Gemini Connection Error: {e}")
+        return None
 
 # --- 3. HUGGING FACE T2V (AUTO-SWITCHING MAGIC) ---
 def generate_t2v(prompt, filename):
@@ -208,7 +225,7 @@ for h in history:
     c_stat = f"stat-{h['status_type']}"
     html += f"""<div class="card"><div class="head"><div class="date">📅 {h['date']}</div><div class="{c_stat}">{h['status_msg']}</div></div>
     <video src="{h['file']}" controls></video>
-    <a href="{h['file']}" download class="btn">⬇️ Download Video</a>
+    <a href="{h['file']}" download class="btn">⬇️ Download {"Full" if h['status_type'] == "done" else "Demo"} Video</a>
     <button class="btn btn-dark" onclick="document.getElementById('b-{v_id}').style.display = document.getElementById('b-{v_id}').style.display === 'block' ? 'none' : 'block'">📝 Show Title & Tags</button>
     <div class="box" id="b-{v_id}">
         <div class="row"><div class="txt" id="t-{v_id}">{h['title']}</div><button class="cpy" onclick="navigator.clipboard.writeText(document.getElementById('t-{v_id}').innerText)">COPY</button></div>
