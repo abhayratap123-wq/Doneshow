@@ -2,21 +2,25 @@ import os
 import time
 import json
 import requests
-import sys
 from datetime import datetime
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 
-# --- 1. SETUP KEYS ---
+# --- 1. SETUP KEYS & MULTI-TOKENS ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-HF_TOKEN = os.environ.get("HF_TOKEN")
 
-if not GEMINI_API_KEY or not HF_TOKEN:
-    print("❌ Error: API Keys missing in GitHub Secrets!")
+# Smart Token Fetcher (Reads HF_TOKEN, HF_TOKEN2... up to HF_TOKEN30)
+hf_tokens = []
+for i in range(1, 31):
+    key_name = "HF_TOKEN" if i == 1 else f"HF_TOKEN{i}"
+    t_val = os.environ.get(key_name)
+    if t_val: hf_tokens.append(t_val)
+
+if not GEMINI_API_KEY or not hf_tokens:
+    print("❌ Error: API Keys or HF Tokens missing in GitHub Secrets!")
     exit(1)
 
+print(f"🔑 Successfully loaded {len(hf_tokens)} Hugging Face Tokens!")
 today_date = datetime.now().strftime("%d-%b-%Y")
-
-# Check if we are running in "DEMO" mode or "FULL" mode
 RUN_MODE = os.environ.get("RUN_MODE", "FULL") 
 
 # --- 2. GEMINI API ---
@@ -36,22 +40,33 @@ def ask_gemini(prompt):
                         if item.get("type") == "text": text_output += item.get("text", "")
         return text_output.strip() if text_output else None
     except Exception as e:
-        print(f"❌ Gemini Connection Error: {e}")
+        print(f"❌ Gemini Error: {e}")
         return None
 
-# --- 3. HUGGING FACE T2V ---
+# --- 3. HUGGING FACE T2V (AUTO-SWITCHING MAGIC) ---
 def generate_t2v(prompt, filename):
     print(f"🎥 Generating Video for: {prompt}")
     API_URL = "https://api-inference.huggingface.co/models/ali-vilab/text-to-video-ms-1.7b"
-    headers = {"Authorization": "Bearer " + HF_TOKEN}
-    for attempt in range(4):
-        try:
-            res = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=60)
-            if res.status_code == 200:
-                with open(filename, "wb") as f: f.write(res.content)
-                return True
-        except: pass
-        time.sleep(15)
+    
+    for idx, token in enumerate(hf_tokens):
+        token_name = "HF_TOKEN" if idx == 0 else f"HF_TOKEN{idx+1}"
+        print(f"🔄 Trying with {token_name}...")
+        headers = {"Authorization": "Bearer " + token}
+        
+        for attempt in range(2): # Try 2 times per token
+            try:
+                res = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=60)
+                if res.status_code == 200:
+                    with open(filename, "wb") as f: f.write(res.content)
+                    print(f"✅ Success with {token_name}!")
+                    return True
+                elif res.status_code == 429:
+                    print(f"⚠️ Limit hit for {token_name}. Switching token...")
+                    break # Break attempt loop, jump to next token
+            except: pass
+            time.sleep(10)
+            
+    print("❌ All Hugging Face Tokens exhausted!")
     return False
 
 # --- 4. STATE MANAGEMENT ---
@@ -67,8 +82,7 @@ if os.path.exists(STATE_FILE):
 if not state:
     print("🎬 Generating New Script for Today...")
     vid_num = int(time.time())
-    
-    script_prompt = """Write a 35-second YouTube Shorts script for a USA audience reacting to a funny/crazy snake encounter (like India trends but American style). Length: Exactly 75 words. Output STRICTLY as a JSON array of 3 objects. 1. "narration": American English script line. 2. "visual": A 3-word English prompt for AI video. Return ONLY raw JSON array."""
+    script_prompt = """Write a 35-second YouTube Shorts script for a USA audience reacting to a funny/crazy snake encounter. Length: Exactly 75 words. Output STRICTLY as a JSON array of 3 objects. 1. "narration": American English script line. 2. "visual": A 3-word English prompt for AI video. Return ONLY raw JSON array."""
     script_text = ask_gemini(script_prompt)
     
     if script_text:
@@ -76,7 +90,7 @@ if not state:
         elif script_text.startswith("```"): script_text = script_text[3:-3]
         scenes = json.loads(script_text.strip())
     else:
-        print("Failed to load script")
+        print("❌ Failed to load script")
         exit(1)
 
     meta_text = ask_gemini("Generate for funny snake reaction short: 1. Catchy Title (<60 chars) 2. 2-line Description 3. 5 comma-separated tags. Format: TITLE|DESC|TAGS")
@@ -86,37 +100,27 @@ if not state:
     except:
         title, desc, tags = "Crazy Snake! 🐍", "Must watch! #shorts", "snake, funny, reaction"
         
-    state = {
-        "vid_num": vid_num, "scenes": scenes, "meta": {"title": title, "desc": desc, "tags": tags}, "completed_clips": []
-    }
+    state = {"vid_num": vid_num, "scenes": scenes, "meta": {"title": title, "desc": desc, "tags": tags}, "completed_clips": []}
     with open(STATE_FILE, "w") as f: f.write(json.dumps(state))
 
 scenes = state["scenes"]
 vid_num = state["vid_num"]
 completed = state["completed_clips"]
-
-# --- 5. EXECUTION LOGIC (DEMO vs FULL) ---
-# If DEMO mode, we only generate the FIRST scene.
-# If FULL mode, we generate all remaining scenes.
+tokens_exhausted = False
 
 if RUN_MODE == "DEMO":
     if len(completed) >= 1:
-        print("⏳ Demo already generated for today. Waiting for FULL run tonight.")
+        print("⏳ Demo already done. Exiting.")
         exit(0)
-    target_scenes = [scenes[0]] # Just scene 1
-    print(f"🚀 Running in DEMO MODE. Generating 1st clip only.")
+    target_scenes = [scenes[0]]
 else:
     target_scenes = scenes
-    print(f"🚀 Running in FULL MODE. Generating remaining clips.")
 
 start_index = len(completed)
 
 for i in range(start_index, len(target_scenes)):
     scene = target_scenes[i]
-    raw_vid = f"raw_{vid_num}_{i}.mp4"
-    aud_file = f"aud_{vid_num}_{i}.mp3"
-    clip_file = f"clip_{vid_num}_{i}.mp4"
-    
+    raw_vid, aud_file, clip_file = f"raw_{vid_num}_{i}.mp4", f"aud_{vid_num}_{i}.mp3", f"clip_{vid_num}_{i}.mp4"
     os.system(f'edge-tts --voice "en-US-ChristopherNeural" --text "{scene["narration"]}" --write-media {aud_file}')
     
     if generate_t2v(scene["visual"], raw_vid):
@@ -125,15 +129,14 @@ for i in range(start_index, len(target_scenes)):
         state["completed_clips"] = completed
         with open(STATE_FILE, "w") as f: f.write(json.dumps(state))
     else:
-        print(f"⚠️ API Limit hit. Partial progress saved.")
+        tokens_exhausted = True
         break
 
-# --- 6. MERGE & DASHBOARD UPDATE ---
+# --- 5. MERGE & DASHBOARD UPDATE ---
 final_video = f"Funny_Snake_{vid_num}.mp4"
 is_complete = len(completed) == len(scenes)
 
 if len(completed) > 0:
-    print(f"🔗 Merging {len(completed)} clips...")
     clip_objs = [VideoFileClip(c) for c in completed]
     concatenate_videoclips(clip_objs).write_videofile(final_video, fps=24, codec="libx264", logger=None)
 else:
@@ -148,10 +151,12 @@ if os.path.exists(HISTORY_FILE):
 
 history = [h for h in history if h.get("id") != str(vid_num)]
 
-# Status Logic
 if is_complete:
     status_msg = "🟢 100% Complete"
     status_type = "done"
+elif tokens_exhausted:
+    status_msg = "❌ All Tokens Empty! (Wait next day)"
+    status_type = "err"
 else:
     status_msg = f"⏳ Demo Ready (Making Full Tonight...)"
     status_type = "demo"
@@ -164,11 +169,9 @@ history.insert(0, {
 
 with open(HISTORY_FILE, "w") as f: f.write(json.dumps(history))
 
-if is_complete:
-    if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
-    print("✅ FULL VIDEO 100% COMPLETE!")
+if is_complete and os.path.exists(STATE_FILE): os.remove(STATE_FILE)
 
-# --- 7. HTML UI ---
+# --- 6. HTML UI ---
 html = """<!DOCTYPE html><html lang="en"><head><title>USA Snake Studio</title><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
     body { font-family: sans-serif; background: #121212; color: #fff; margin: 0; padding: 20px; text-align: center; }
@@ -178,6 +181,7 @@ html = """<!DOCTYPE html><html lang="en"><head><title>USA Snake Studio</title><m
     .date { background: #333; color: #00e676; padding: 4px 8px; border-radius: 5px; font-size: 12px; font-weight: bold; }
     .stat-demo { background: #332600; color: #ffcc00; padding: 4px 8px; border-radius: 5px; font-size: 11px; font-weight: bold; animation: blink 1s infinite; }
     .stat-done { background: #133320; color: #00ff66; padding: 4px 8px; border-radius: 5px; font-size: 11px; font-weight: bold; }
+    .stat-err { background: #331313; color: #ff4d4d; padding: 4px 8px; border-radius: 5px; font-size: 11px; font-weight: bold; }
     @keyframes blink { 50% { opacity: 0.5; } }
     video { width: 100%; border-radius: 10px; background: #000; margin-bottom: 10px; }
     .btn { background: #00e676; color: #000; display: block; padding: 10px; text-decoration: none; text-align: center; font-weight: bold; border-radius: 6px; margin-bottom: 5px; cursor: pointer; border: none; width: 100%; box-sizing: border-box; }
@@ -190,10 +194,10 @@ html = """<!DOCTYPE html><html lang="en"><head><title>USA Snake Studio</title><m
 
 for h in history:
     v_id = h['id']
-    c_stat = "stat-done" if h['status_type'] == "done" else "stat-demo"
+    c_stat = f"stat-{h['status_type']}"
     html += f"""<div class="card"><div class="head"><div class="date">📅 {h['date']}</div><div class="{c_stat}">{h['status_msg']}</div></div>
     <video src="{h['file']}" controls></video>
-    <a href="{h['file']}" download class="btn">⬇️ Download {"Full" if h['status_type'] == "done" else "Demo"} Video</a>
+    <a href="{h['file']}" download class="btn">⬇️ Download Video</a>
     <button class="btn btn-dark" onclick="document.getElementById('b-{v_id}').style.display = document.getElementById('b-{v_id}').style.display === 'block' ? 'none' : 'block'">📝 Show Title & Tags</button>
     <div class="box" id="b-{v_id}">
         <div class="row"><div class="txt" id="t-{v_id}">{h['title']}</div><button class="cpy" onclick="navigator.clipboard.writeText(document.getElementById('t-{v_id}').innerText)">COPY</button></div>
