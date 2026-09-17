@@ -1,42 +1,46 @@
-name: Auto AI Snake Video Engine
+name: Live Demo & Full Video Engine
 
 on:
+  push:
+    branches:
+      - main
+      - master
   schedule:
-    # 16:00 UTC = 9:30 PM India Time
-    - cron: '0 16 * * *'
+    - cron: '0 16 * * *' # 9:30 PM IST (Full run)
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  produce_video:
+  make_video:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install requests moviepy==1.0.3 edge-tts
 
-      - name: Install System Dependencies
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Install Required Python Packages
-        run: pip install requests google-generativeai edge-tts moviepy==1.0.3
-
-      - name: Run Python Generator Script
+      - name: Check trigger type and run Python
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python master_generator.py
+        run: |
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Running FULL mode..."
+            export RUN_MODE="FULL"
+          else
+            echo "Running DEMO mode..."
+            export RUN_MODE="DEMO"
+          fi
+          python master_generator.py
 
-      - name: Commit Video and Webpage
+      - name: Push to GitHub Pages
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
-          git add *.mp4 index.html history.json || echo "No files"
-          git commit -m "New Video Generated & UI Updated" || echo "No changes"
+          git add *.mp4 index.html history.json video_state.json || echo "No files"
+          git commit -m "Auto Update Video & HTML Dashboard" || echo "No changes"
           git push
