@@ -23,25 +23,30 @@ print(f"🔑 Successfully loaded {len(hf_tokens)} Hugging Face Tokens!")
 today_date = datetime.now().strftime("%d-%b-%Y")
 RUN_MODE = os.environ.get("RUN_MODE", "FULL") 
 
-# --- 2. GEMINI API ---
+# --- 2. THE ULTIMATE GEMINI AI (AUTO-FALLBACK) ---
 def ask_gemini(prompt):
     print("🧠 Contacting Gemini AI...")
-    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    payload = {"model": "gemini-3.6-flash", "input": [{"type": "user_input", "content": [{"type": "text", "text": prompt}]}], "store": False}
-    try:
-        res = requests.post(url, json=payload, headers=headers)
-        data = res.json()
-        text_output = ""
-        if data and "steps" in data:
-            for step in data["steps"]:
-                if step.get("type") == "model_output":
-                    for item in step.get("content", []):
-                        if item.get("type") == "text": text_output += item.get("text", "")
-        return text_output.strip() if text_output else None
-    except Exception as e:
-        print(f"❌ Gemini Error: {e}")
-        return None
+    models_to_try = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
+    headers = {"Content-Type": "application/json"}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    for model in models_to_try:
+        print(f"🔄 Trying model: {model}...")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        try:
+            res = requests.post(url, json=payload, headers=headers)
+            data = res.json()
+            if res.status_code == 200 and "candidates" in data:
+                print(f"✅ Success with {model}!")
+                return data['candidates'][0]['content']['parts'][0]['text'].strip()
+            else:
+                error_msg = data.get("error", {}).get("message", "Unknown Error")
+                print(f"⚠️ {model} failed. Reason: {error_msg}")
+        except Exception as e:
+            print(f"⚠️ Network error with {model}: {e}")
+            
+    print("❌ All Gemini Models Failed!")
+    return None
 
 # --- 3. HUGGING FACE T2V (AUTO-SWITCHING MAGIC) ---
 def generate_t2v(prompt, filename):
@@ -83,14 +88,20 @@ if not state:
     print("🎬 Generating New Script for Today...")
     vid_num = int(time.time())
     script_prompt = """Write a 35-second YouTube Shorts script for a USA audience reacting to a funny/crazy snake encounter. Length: Exactly 75 words. Output STRICTLY as a JSON array of 3 objects. 1. "narration": American English script line. 2. "visual": A 3-word English prompt for AI video. Return ONLY raw JSON array."""
+    
     script_text = ask_gemini(script_prompt)
     
     if script_text:
         if script_text.startswith("```json"): script_text = script_text[7:-3]
         elif script_text.startswith("```"): script_text = script_text[3:-3]
-        scenes = json.loads(script_text.strip())
+        
+        try:
+            scenes = json.loads(script_text.strip())
+        except Exception as e:
+            print(f"❌ JSON Parse Error: {e}\nRaw Text: {script_text}")
+            exit(1)
     else:
-        print("❌ Failed to load script")
+        print("❌ Failed to load script. Exiting.")
         exit(1)
 
     meta_text = ask_gemini("Generate for funny snake reaction short: 1. Catchy Title (<60 chars) 2. 2-line Description 3. 5 comma-separated tags. Format: TITLE|DESC|TAGS")
