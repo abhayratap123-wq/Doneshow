@@ -1,0 +1,42 @@
+name: Auto AI Snake Video Engine
+
+on:
+  schedule:
+    # 16:00 UTC = 9:30 PM India Time
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  produce_video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Required Python Packages
+        run: pip install requests google-generativeai edge-tts moviepy==1.0.3
+
+      - name: Run Python Generator Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python master_generator.py
+
+      - name: Commit Video and Webpage
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'actions@github.com'
+          git add *.mp4 index.html history.json || echo "No files"
+          git commit -m "New Video Generated & UI Updated" || echo "No changes"
+          git push
