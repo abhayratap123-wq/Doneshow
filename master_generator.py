@@ -15,33 +15,23 @@ if not GEMINI_API_KEY or not HF_TOKEN:
 
 today_date = datetime.now().strftime("%d-%b-%Y")
 
-# --- 2. NEW GEMINI 3.6 REST API (From your HTML Code) ---
+# --- 2. THE BULLETPROOF GEMINI API (NO PACKAGES NEEDED) ---
 def ask_gemini(prompt):
-    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY
-    }
-    payload = {
-        "model": "gemini-3.6-flash",
-        "input": [{"type": "user_input", "content": [{"type": "text", "text": prompt}]}],
-        "store": False
-    }
+    print("🧠 Contacting Gemini AI...")
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {"Content-Type": "application/json"}
     
     try:
         res = requests.post(url, json=payload, headers=headers)
-        res.raise_for_status()
         data = res.json()
-        
-        text_output = ""
-        for step in data.get("steps", []):
-            if step.get("type") == "model_output":
-                for item in step.get("content", []):
-                    if item.get("type") == "text":
-                        text_output += item.get("text", "")
-        return text_output.strip()
+        if "candidates" in data:
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        else:
+            print(f"❌ Gemini Error Response: {data}")
+            return None
     except Exception as e:
-        print(f"❌ Gemini API Error: {e}")
+        print(f"❌ Gemini Connection Error: {e}")
         return None
 
 # --- 3. HUGGING FACE T2V (Crash-Proof) ---
